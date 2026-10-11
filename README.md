@@ -1,0 +1,1 @@
+An intentionally vulnerable LLM support agent for measuring indirect prompt injection and tool abuse, mapped to the OWASP LLM Top 10 (2026).
