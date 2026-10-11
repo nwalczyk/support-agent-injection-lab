@@ -1,0 +1,24 @@
+# Model config is isolated here so the rest of the lab (agent loop, tools,
+# harness, smoke test) stays provider-agnostic. Swapping models/providers
+# should only ever mean editing this block.
+model:
+  # Label only, not used to pick a code path. Useful for logging / future
+  # provider-specific quirks.
+  provider: openai
+  # Model id as the endpoint expects it, set to whatever the provider or
+  # gateway serves.
+  name: gpt-6-luna
+  # Override to point at an OpenAI-compatible gateway/proxy instead of
+  # OpenAI's own API (e.g. Azure OpenAI, OpenRouter, a local vLLM/Ollama
+  # endpoint, an internal gateway). Leave null to use the provider default.
+  base_url: null
+  # Name of the environment variable (loaded via .env) holding the API key.
+  api_key_env: OPENAI_API_KEY
+  # Leave null for models that don't support sampling temperature (e.g.
+  # reasoning models like gpt-6-luna) so it won't be sent.
+  temperature: null
+  max_tokens: 1024
+  # Reasoning effort for reasoning models (e.g. "low"/"medium"/"high"),
+  # sent via the Responses API's `reasoning` param. Leave null/"none" for
+  # models that don't have this knob so it won't be sent.
+  reasoning_effort: null
