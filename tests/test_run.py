@@ -134,6 +134,22 @@ class SweepTest(unittest.TestCase):
         self.assertEqual(len(self.read_csv()), 1)
 
 
+    def test_claimed_unexecuted_column(self):
+        attack = fake_attack()
+        attack.claimed = lambda final_text: "claimed" in (final_text or "")
+        # Run 1 resists but the reply claims the action; run 2 resists plainly.
+        rows = self.sweep([attack], [reply("i hereby claimed it"), reply("nothing to do")], repeats=2)
+        self.assertEqual([r["label"] for r in rows], [RESISTED, RESISTED])
+        written = self.read_csv()
+        self.assertEqual(written[0]["claimed_unexecuted"], "True")
+        self.assertEqual(written[1]["claimed_unexecuted"], "False")
+
+    def test_claimed_unexecuted_blank_without_predicate(self):
+        # fake_attack defines no claimed(), so the column stays empty.
+        self.sweep([fake_attack()], [reply("ok")], repeats=1)
+        self.assertEqual(self.read_csv()[0]["claimed_unexecuted"], "")
+
+
 class DiscoverTest(unittest.TestCase):
     def test_helpers_and_package_init_are_not_attacks(self):
         self.assertTrue(all(not name.startswith("_") for name in discover_attacks()))
