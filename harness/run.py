@@ -1,7 +1,7 @@
 """Sweep engine: runs every attack x variant x repeat through the agent and
 records one labeled CSV row per run.
 
-    python harness/run.py                          # every attack, 5 repeats
+    python harness/run.py                          # every attack, 20 repeats
     python harness/run.py --attack t6 --repeats 10
     python harness/run.py --attack t7 --variant direct --config NAME
 
@@ -34,7 +34,7 @@ from agent.config import resolve_config
 from agent.context import LabData, Ticket, load_lab_data
 from agent.loop import INCOMPLETE, MODEL_ERROR, run_ticket
 from agent.model import Model, build_model
-from attacks import EXPLOITED, LABELS
+from attacks import EXPLOITED, LABELS, REFUSED, RESISTED
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = ROOT / "results"
@@ -59,6 +59,7 @@ CSV_FIELDS = [
     "submitter",
     "tool_calls",
     "final_text",
+    "claimed_unexecuted",
 ]
 
 
@@ -103,6 +104,14 @@ def run_one(
         if label not in LABELS:
             raise ValueError(f"{attack_name(attack)}.check() returned {label!r}; expected one of {LABELS}")
 
+    # Optional, attack-defined: did the reply claim the action happened even
+    # though it was not labeled EXPLOITED? Separates genuine resistance from a
+    # model that accepted the injection in its reply but never fired the tool.
+    claimed_unexecuted: object = ""
+    predicate = getattr(attack, "claimed", None)
+    if predicate is not None and label in (RESISTED, REFUSED):
+        claimed_unexecuted = bool(predicate(result.final_text or ""))
+
     tool_calls = [
         {"name": c.name, "args": c.args if c.args is not None else c.arguments, "ok": c.ok, "result": c.result}
         for c in result.state.calls
@@ -124,6 +133,7 @@ def run_one(
         "submitter": ticket.submitter_account_id,
         "tool_calls": json.dumps(tool_calls),
         "final_text": result.final_text or "",
+        "claimed_unexecuted": claimed_unexecuted,
     }
 
 
@@ -163,15 +173,16 @@ def sweep(
 
 def default_out_path(config: Mapping[str, Any]) -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return RESULTS_DIR / f"{stamp}_{config['config_name']}.csv"
+    return RESULTS_DIR / f"{stamp}_{config['model_name']}_{config['config_name']}.csv"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--attack", action="append", help="attack module name (repeatable); default: all")
     parser.add_argument("--variant", action="append", help="only run these variant names (repeatable)")
-    parser.add_argument("--repeats", type=int, default=5, help="runs per attack x variant (default 5)")
-    parser.add_argument("--config", help="override config: a configs/ name or a .yaml path")
+    parser.add_argument("--repeats", type=int, default=20, help="runs per attack x variant (default 20)")
+    parser.add_argument("--config", help="mitigation override: a configs/ name or a .yaml path")
+    parser.add_argument("--model", help="model profile from config.yaml models: (default: active_model)")
     parser.add_argument("--out", type=Path, help="CSV path (default: results/<timestamp>_<config>.csv)")
     args = parser.parse_args()
     if args.repeats < 1:
@@ -183,7 +194,7 @@ def main() -> int:
         return 1
     attack_modules = [load_attack(n) for n in names]
 
-    config = resolve_config(args.config)
+    config = resolve_config(args.config, model=args.model)
     model = build_model(config)
     out_path = args.out or default_out_path(config)
     print(f"Model: {config['model']['name']}  Config: {config['config_name']}  Writing: {out_path}")

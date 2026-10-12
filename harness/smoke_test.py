@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from agent.config import load_config
+from agent.config import resolve_config
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -99,7 +99,7 @@ def build_system_prompt() -> str:
 
 def run() -> int:
     load_dotenv()
-    model_cfg = load_config()["model"]
+    model_cfg = resolve_config()["model"]
 
     api_key = os.environ.get(model_cfg["api_key_env"])
     if not api_key:

@@ -4,9 +4,14 @@ and watch each tool call, its result and the final reply.
     python harness/chat.py                      # choose the account from a list
     python harness/chat.py --account ACC-10022  # skip the prompt
     python harness/chat.py --config NAME        # apply configs/NAME.yaml
+    python harness/chat.py --attack t6 --variant baseline
 
 Each ticket is a separate run with fresh tool state. End a ticket with a line
 containing only "." (or Ctrl-D); Ctrl-D on an empty ticket quits.
+
+--attack t6 --variant baseline sets up T6's scenario before the chat starts:
+the payload is planted in the account data, and the submitting account is
+preselected. Type your own ticket, or send just "." to use T6's ticket.
 """
 
 from __future__ import annotations
@@ -23,6 +28,8 @@ from agent.context import LabData, Ticket, load_lab_data
 from agent.loop import run_ticket
 from agent.model import build_model
 from agent.tools import ToolCall
+from attacks import Scenario
+from harness.run import load_attack
 
 
 def choose_account(data: LabData, preset: Optional[str]) -> str:
@@ -43,19 +50,30 @@ def choose_account(data: LabData, preset: Optional[str]) -> str:
         print("Not a listed account.")
 
 
-def read_ticket() -> Optional[str]:
-    print('\nType the ticket. End with a line containing only "." (Ctrl-D on an empty ticket quits).')
+def read_ticket(default: Optional[str] = None) -> Optional[str]:
+    """The typed ticket. An empty ticket ended with "." returns default;
+    Ctrl-D on an empty ticket returns None."""
+    hint = ' ("." alone sends the attack ticket)' if default else ""
+    print(f'\nType the ticket. End with a line containing only "."{hint}. Ctrl-D on an empty ticket quits.')
     lines = []
     while True:
         try:
             line = input()
         except EOFError:
-            break
+            return "\n".join(lines).strip() or None
         if line.strip() == ".":
-            break
+            return "\n".join(lines).strip() or default
         lines.append(line)
-    text = "\n".join(lines).strip()
-    return text or None
+
+
+def apply_attack(data: LabData, name: str, variant: Optional[str]) -> Scenario:
+    attack = load_attack(name)
+    if variant not in attack.VARIANTS:
+        sys.exit(f"--attack {name} needs --variant, one of: {', '.join(attack.VARIANTS)}")
+    scenario = attack.setup(data, variant)
+    print(f"Planted {name} variant={variant}. Attack ticket from {scenario.submitter_account_id}:\n")
+    print(scenario.ticket)
+    return scenario
 
 
 def print_tool_call(call: ToolCall) -> None:
@@ -67,17 +85,23 @@ def print_tool_call(call: ToolCall) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--account", help="submitting account ID, e.g. ACC-10022")
-    parser.add_argument("--config", help="override config: a configs/ name or a .yaml path")
+    parser.add_argument("--config", help="mitigation override: a configs/ name or a .yaml path")
+    parser.add_argument("--model", help="model profile from config.yaml models: (default: active_model)")
+    parser.add_argument("--attack", help="plant an attack's payload for the session, e.g. t6")
+    parser.add_argument("--variant", help="the attack variant to plant, e.g. baseline")
     args = parser.parse_args()
+    if args.variant and not args.attack:
+        parser.error("--variant needs --attack")
 
-    config = resolve_config(args.config)
+    config = resolve_config(args.config, model=args.model)
     data = load_lab_data()
     model = build_model(config)
     print(f"Model: {config['model']['name']}  Config: {config['config_name']}")
-    account_id = choose_account(data, args.account)
+    scenario = apply_attack(data, args.attack, args.variant) if args.attack else None
+    account_id = choose_account(data, args.account or (scenario and scenario.submitter_account_id))
 
     while True:
-        body = read_ticket()
+        body = read_ticket(default=scenario.ticket if scenario else None)
         if body is None:
             return 0
         ticket = Ticket(submitter_account_id=account_id, body=body)
