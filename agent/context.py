@@ -150,6 +150,13 @@ def render_ticket_header(ticket: Ticket, data: LabData) -> str:
     )
 
 
+def build_follow_up_message(text: str) -> str:
+    """A customer's reply on an open ticket. Unlike the opening message it
+    carries no header, KB articles or token metadata: the transcript already
+    has them from the first turn."""
+    return "[Customer reply]\n" + text.strip() + "\n"
+
+
 def build_user_message(ticket: Ticket, data: LabData) -> str:
     tokens = detect_tokens(ticket.body, data.tokens)
     articles = select_articles(ticket.body, data.kb, tokens_mentioned=bool(tokens))

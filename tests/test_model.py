@@ -137,6 +137,17 @@ class InputToMessagesTest(unittest.TestCase):
         self.assertEqual(messages[1]["content"], "let me check")
         self.assertEqual(len(messages[1]["tool_calls"]), 1)
 
+    def test_follow_up_user_message_after_a_reply(self):
+        conversation = [
+            {"role": "user", "content": "ticket"},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Which tx?"}]},
+            {"role": "user", "content": "[Customer reply]\n0xa1b2\n"},
+        ]
+        messages = responses_input_to_chat_messages("", conversation)
+        self.assertEqual([m["role"] for m in messages], ["user", "assistant", "user"])
+        self.assertEqual(messages[1]["content"], "Which tx?")
+        self.assertEqual(messages[2]["content"], "[Customer reply]\n0xa1b2\n")
+
     def test_reasoning_items_are_dropped(self):
         messages = responses_input_to_chat_messages("", [{"type": "reasoning", "summary": []}, {"role": "user", "content": "hi"}])
         self.assertEqual(messages, [{"role": "user", "content": "hi"}])

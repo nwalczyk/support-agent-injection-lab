@@ -9,6 +9,10 @@ Budgets: only the step limit (budgets.max_steps_per_ticket) is enforced. A
 step is one tool call; a call that would exceed the limit is never executed
 and the run stops. Token usage is summed into RunResult.total_tokens but not
 enforced yet (T10, later milestone).
+
+Follow-ups: continue_ticket() adds a customer reply to a completed ticket and
+runs the agent again on the same transcript and tool state. Budgets are per
+ticket, so steps, model calls and tokens carry over across turns.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from agent.config import resolve_config
-from agent.context import LabData, Ticket, build_system_prompt, build_user_message, load_lab_data
+from agent.context import LabData, Ticket, build_follow_up_message, build_system_prompt, build_user_message, load_lab_data
 from agent.model import Model, ModelResponse, TransientModelError
 from agent.tools import TOOL_SCHEMAS, ToolCall, ToolState, execute_tool
 
@@ -97,12 +101,60 @@ def run_ticket(
     uses it to print calls as they happen)."""
     config = config if config is not None else resolve_config()
     data = data if data is not None else load_lab_data()
-    max_steps = config["budgets"]["max_steps_per_ticket"]
-
-    instructions = build_system_prompt()
     conversation: List[Dict[str, Any]] = [{"role": "user", "content": build_user_message(ticket, data)}]
-    state = ToolState.fresh(data.accounts)
-    steps = model_calls = total_tokens = 0
+    return _drive(
+        ticket, model, config, conversation, ToolState.fresh(data.accounts), (0, 0, 0),
+        on_tool_call, max_retries, retry_backoff_s, sleep,
+    )
+
+
+def continue_ticket(
+    previous: RunResult,
+    message: str,
+    model: Model,
+    *,
+    config: Optional[Mapping[str, Any]] = None,
+    on_tool_call: Optional[Callable[[ToolCall], None]] = None,
+    max_retries: int = 3,
+    retry_backoff_s: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> RunResult:
+    """Add a customer follow-up to a completed ticket and run the agent again.
+
+    The follow-up continues previous's transcript and shares its ToolState
+    (the same object: credits, outbox and the call log keep accumulating).
+    Steps, model calls and tokens carry over, so max_steps_per_ticket covers
+    the whole conversation. Only a COMPLETED run can be continued: any other
+    stop can leave the transcript mid tool call (a function_call with no
+    output), which the API would reject, so the ticket must be restarted."""
+    if previous.stop_reason != COMPLETED:
+        raise ValueError(f"cannot continue a ticket that stopped with {previous.stop_reason!r}; start a new ticket")
+    config = config if config is not None else resolve_config()
+    conversation = previous.conversation + [{"role": "user", "content": build_follow_up_message(message)}]
+    return _drive(
+        previous.ticket, model, config, conversation, previous.state,
+        (previous.steps, previous.model_calls, previous.total_tokens),
+        on_tool_call, max_retries, retry_backoff_s, sleep,
+    )
+
+
+def _drive(
+    ticket: Ticket,
+    model: Model,
+    config: Mapping[str, Any],
+    conversation: List[Dict[str, Any]],
+    state: ToolState,
+    counters: Tuple[int, int, int],
+    on_tool_call: Optional[Callable[[ToolCall], None]],
+    max_retries: int,
+    retry_backoff_s: float,
+    sleep: Callable[[float], None],
+) -> RunResult:
+    """Call the model and execute tools until a final reply or a stop.
+    counters is (steps, model_calls, total_tokens) carried in from earlier turns."""
+    max_steps = config["budgets"]["max_steps_per_ticket"]
+    instructions = build_system_prompt()
+    steps, model_calls, total_tokens = counters
 
     def finish(stop_reason: str, final_text: Optional[str] = None, error: Optional[str] = None) -> RunResult:
         return RunResult(

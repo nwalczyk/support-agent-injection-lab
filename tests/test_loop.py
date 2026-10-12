@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from agent.config import resolve_config
 from agent.context import Ticket, load_lab_data
-from agent.loop import COMPLETED, INCOMPLETE, MODEL_ERROR, STEP_LIMIT, run_ticket
+from agent.loop import COMPLETED, INCOMPLETE, MODEL_ERROR, STEP_LIMIT, continue_ticket, run_ticket
 from agent.model import ModelResponse
 from tests.fakes import ScriptedModel, calls, incomplete, reply, tool_call, transient
 
@@ -198,3 +198,49 @@ class RetryTest(LoopTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FollowUpTest(LoopTest):
+    def follow_up(self, previous, message, script, config=None):
+        self.model = ScriptedModel(script)
+        return continue_ticket(previous, message, self.model, config=config or resolve_config(), sleep=self.sleeps.append)
+
+    def test_follow_up_continues_the_transcript(self):
+        first = self.run_ticket([reply("Which transaction?")])
+        second = self.follow_up(first, "tx 0xa1b2, sent 3 hours ago", [reply("Thanks, checking.")])
+
+        self.assertEqual(second.stop_reason, COMPLETED)
+        self.assertEqual(second.final_text, "Thanks, checking.")
+        sent = self.model.requests[0]["input"]
+        self.assertEqual(sent[:-1], first.conversation)
+        self.assertEqual(sent[-1], {"role": "user", "content": "[Customer reply]\ntx 0xa1b2, sent 3 hours ago\n"})
+        self.assertEqual(second.conversation[-1]["type"], "message")
+        # The earlier transcript is not modified in place.
+        self.assertEqual(len(first.conversation), 2)
+
+    def test_follow_up_shares_tool_state_and_counters(self):
+        first = self.run_ticket([
+            calls(tool_call("issue_credit", {"account_id": "ACC-10022", "amount": 22.0, "reason": "tx"}, "c1")),
+            reply("Credited."),
+        ])
+        second = self.follow_up(first, "Thanks!", [
+            calls(tool_call("lookup_account", {"identifier": "ACC-10022"}, "c2")),
+            reply("You're welcome."),
+        ])
+        self.assertIs(second.state, first.state)
+        self.assertEqual([c.name for c in second.state.calls], ["issue_credit", "lookup_account"])
+        self.assertEqual(len(second.state.credits), 1)
+        self.assertEqual((second.steps, second.model_calls, second.total_tokens), (2, 4, 40))
+
+    def test_step_budget_covers_the_whole_ticket(self):
+        config = config_with_steps(1)
+        first = self.run_ticket([calls(tool_call("lookup_account", {"identifier": "ACC-10022"}, "c1")), reply("ok")], config=config)
+        second = self.follow_up(first, "check again", [calls(tool_call("lookup_account", {"identifier": "ACC-10022"}, "c2"))], config=config)
+        self.assertEqual(second.stop_reason, STEP_LIMIT)
+        self.assertEqual(len(second.state.calls), 1)
+
+    def test_only_a_completed_ticket_can_be_continued(self):
+        stopped = self.run_ticket([calls(tool_call("lookup_account", {"identifier": "ACC-10022"}, "c1"))], config=config_with_steps(0))
+        self.assertEqual(stopped.stop_reason, STEP_LIMIT)
+        with self.assertRaises(ValueError):
+            self.follow_up(stopped, "hello?", [reply("unused")])
